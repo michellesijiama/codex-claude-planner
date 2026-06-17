@@ -20,6 +20,7 @@
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -38,8 +39,9 @@ def _debug(message):
 
 MODEL = os.environ.get("CLAUDE_PLANNER_MODEL", "opus")
 MAX_USD = os.environ.get("CLAUDE_PLANNER_MAX_USD", "1.0")
-# Codex 启动 MCP 服务时环境可能很精简，claude 不一定在 PATH 上，允许用绝对路径覆盖。
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+# Codex 启动 MCP 服务时环境可能很精简，claude 不一定在 PATH 上。
+# 优先用 CLAUDE_BIN 环境变量，否则尝试在 PATH 上探测，最后退回字面量 "claude"。
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 SERVER_NAME = "claude-planner"
 SERVER_VERSION = "0.1.0"
 

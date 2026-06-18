@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Claude-Codex 编排器。
+"""Claude-Codex orchestrator.
 
-用法：
-  python3 orchestrate.py --goal "给 API 加 JWT 认证" [--repo .] [--model opus]
+Usage:
+  python3 orchestrate.py --goal "add JWT auth to the API" [--repo .] [--model opus]
 
-脚本会让 Claude 生成有序子任务，让 Codex 逐项执行，运行每个子任务的检查命令，
-通过后提交到专属分支，并持续写入 mission.json / mission.md 方便人工观察。
-不会自动合并到 main。
+The script asks Claude to produce ordered subtasks, has Codex execute each one, runs each
+subtask's check command, commits passing subtasks to a dedicated branch, and continuously
+writes mission.json / mission.md for you to watch. It never auto-merges into main.
 """
 
 import argparse
@@ -45,8 +45,9 @@ STATUS_SCHEMA = {
         "summary": {"type": "string"},
     },
     "required": ["status", "summary"],
-    # OpenAI 结构化输出要求每个对象显式声明 additionalProperties:false，否则 API 返回
-    # invalid_json_schema (400)，导致 codex 秒级失败。codex 的 --output-schema 走这条路径。
+    # OpenAI structured output requires every object to declare additionalProperties:false,
+    # otherwise the API returns invalid_json_schema (400) and codex fails within seconds.
+    # codex's --output-schema goes through that path.
     "additionalProperties": False,
 }
 
@@ -60,7 +61,7 @@ REPAIR_SCHEMA = {
 }
 
 DRY_RUN = False
-CODEX_TIMEOUT = 900  # 单个 Codex 子任务最长执行秒数，超时按 BLOCKED 处理
+CODEX_TIMEOUT = 900  # max seconds for a single Codex subtask; on timeout treat as BLOCKED
 
 
 def _repo_path(repo):
@@ -85,13 +86,13 @@ def _format_command(command):
 
 
 def _run_required(command, cwd=None):
-    # stdin 必须为 DEVNULL：codex/claude 等工具在检测到打开的 stdin 时会等待输入而挂起。
+    # stdin must be DEVNULL: tools like codex/claude wait for input and hang if stdin is open.
     proc = subprocess.run(
         command, cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
     if proc.returncode != 0:
         output = (proc.stdout or "") + (proc.stderr or "")
-        print(f"命令执行失败：{_format_command(command)}", file=sys.stderr)
+        print(f"Command failed: {_format_command(command)}", file=sys.stderr)
         if output.strip():
             print(output[-4000:], file=sys.stderr)
         sys.exit(1)
@@ -101,7 +102,7 @@ def _run_required(command, cwd=None):
 def _extract_json_object(text):
     text = (text or "").strip()
     if not text:
-        raise ValueError("空输出")
+        raise ValueError("empty output")
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -114,14 +115,14 @@ def _extract_json_object(text):
                 return value
             except json.JSONDecodeError:
                 continue
-    raise ValueError("无法从输出中解析 JSON")
+    raise ValueError("could not parse JSON from output")
 
 
 def _structured_result(stdout):
     envelope = _extract_json_object(stdout)
     if isinstance(envelope, dict):
-        # 使用 --json-schema 时，Claude 把校验过的结构化结果放在 structured_output，
-        # 而 result 字段为空字符串。优先读 structured_output，兼容旧的 result 路径。
+        # With --json-schema, Claude puts the validated structured result in structured_output,
+        # while the result field is an empty string. Prefer structured_output; fall back to result.
         structured = envelope.get("structured_output")
         if isinstance(structured, (dict, list)):
             return structured
@@ -144,9 +145,9 @@ def preflight(repo):
     errors = []
 
     if shutil.which("claude") is None:
-        errors.append("未找到 claude，请先确认 Claude Code CLI 已安装并在 PATH 中。")
+        errors.append("claude not found. Make sure the Claude Code CLI is installed and on PATH.")
     if shutil.which("codex") is None:
-        errors.append("未找到 codex，请先安装 Codex CLI 并确认在 PATH 中。")
+        errors.append("codex not found. Install the Codex CLI and make sure it is on PATH.")
 
     proc = subprocess.run(
         ["git", "-C", str(repo_path), "rev-parse", "--is-inside-work-tree"],
@@ -154,28 +155,29 @@ def preflight(repo):
         text=True,
     )
     if proc.returncode != 0 or proc.stdout.strip() != "true":
-        errors.append(f"目标目录不是 git 仓库：{repo_path}")
+        errors.append(f"target directory is not a git repo: {repo_path}")
 
     if errors:
         for error in errors:
-            print(f"错误：{error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
 
 
 def claude_plan(goal, repo, model, max_usd):
     repo_path = _repo_path(repo)
     prompt = (
-        "请检视当前 git 仓库，围绕下面目标生成一个有序实施计划。\n"
-        f"目标：{goal}\n\n"
-        "要求：把目标拆成若干串行子任务。每个子任务必须包含：\n"
-        "1. description：清楚描述要做什么。\n"
-        "2. check_command：一条可在 shell 直接运行的测试、lint 或 build 命令，"
-        "用于客观验收这个子任务。\n\n"
-        "关于 check_command 的硬性要求（非常重要）：\n"
-        "- 它必须用退出码表达成败：成功时退出码为 0，失败时退出码必须非 0。\n"
-        "- 禁止使用 `|| echo`、`|| true` 等会把失败退出码吞掉、导致命令总是返回 0 的写法。\n"
-        "- 例如检查文件存在应写 `test -f path`（而不是 `test -f path && echo ok || echo no`）。\n\n"
-        "只输出符合 schema 的结构化 JSON。"
+        "Inspect the current git repo and produce an ordered implementation plan for the goal below.\n"
+        f"Goal: {goal}\n\n"
+        "Requirements: break the goal into sequential subtasks. Each subtask must include:\n"
+        "1. description: a clear description of what to do.\n"
+        "2. check_command: a single shell command (test, lint, or build) that objectively "
+        "verifies the subtask.\n\n"
+        "Hard requirements for check_command (very important):\n"
+        "- It must signal success via its exit code: 0 on success, non-zero on failure.\n"
+        "- Never use `|| echo`, `|| true`, or anything that swallows the exit code and makes the "
+        "command always return 0.\n"
+        "- For example, to check a file exists write `test -f path` (not `test -f path && echo ok || echo no`).\n\n"
+        "Output only structured JSON matching the schema."
     )
     command = [
         "claude",
@@ -194,25 +196,25 @@ def claude_plan(goal, repo, model, max_usd):
     ]
 
     if DRY_RUN:
-        _print_command("将调用 Claude 生成计划", command)
+        _print_command("would call Claude to generate the plan", command)
         return {"subtasks": []}
 
     proc = _run_required(command, cwd=str(repo_path))
     data = _structured_result(proc.stdout)
     subtasks = data.get("subtasks") if isinstance(data, dict) else None
     if not isinstance(subtasks, list):
-        print("错误：Claude 计划输出缺少 subtasks 列表。", file=sys.stderr)
+        print("Error: Claude plan output is missing the subtasks list.", file=sys.stderr)
         sys.exit(1)
 
     normalized = []
     for index, item in enumerate(subtasks, start=1):
         if not isinstance(item, dict):
-            print(f"错误：第 {index} 个子任务不是对象。", file=sys.stderr)
+            print(f"Error: subtask #{index} is not an object.", file=sys.stderr)
             sys.exit(1)
         description = item.get("description")
         check_command = item.get("check_command")
         if not isinstance(description, str) or not isinstance(check_command, str):
-            print(f"错误：第 {index} 个子任务缺少 description 或 check_command。", file=sys.stderr)
+            print(f"Error: subtask #{index} is missing description or check_command.", file=sys.stderr)
             sys.exit(1)
         normalized.append(
             {
@@ -236,15 +238,15 @@ def codex_exec(subtask, repo):
     description = subtask.get("description", "")
     extra = subtask.get("repair_instructions")
     if extra:
-        description = f"{description}\n\n补充修复指令：\n{extra}"
+        description = f"{description}\n\nAdditional fix instructions:\n{extra}"
 
     prompt = (
-        "请在当前仓库中执行下面这个子任务。\n\n"
-        f"子任务：{description}\n\n"
-        f"验收命令：{subtask.get('check_command', '')}\n\n"
-        "完成后必须按提供的 output schema 汇报 status 和 summary。"
-        "如果已经完成并准备让调度器运行验收命令，status 用 DONE；"
-        "如果无法继续，status 用 BLOCKED，并在 summary 说明原因。"
+        "Execute the following subtask in the current repo.\n\n"
+        f"Subtask: {description}\n\n"
+        f"Check command: {subtask.get('check_command', '')}\n\n"
+        "When finished, you must report status and summary using the provided output schema. "
+        "If you have completed it and are ready for the orchestrator to run the check command, "
+        "use status DONE; if you cannot continue, use status BLOCKED and explain why in summary."
     )
     command = [
         "codex",
@@ -262,12 +264,14 @@ def codex_exec(subtask, repo):
     ]
 
     if DRY_RUN:
-        _print_command("将调用 Codex 执行子任务", command)
-        return {"status": "DONE", "summary": "dry-run：未真实调用 Codex"}
+        _print_command("would call Codex to execute the subtask", command)
+        return {"status": "DONE", "summary": "dry-run: Codex not actually called"}
 
     try:
-        # stdin=DEVNULL 关键：否则 codex exec 会停在 "Reading additional input from stdin..." 挂起。
-        # timeout 兜底：gpt 高推理可能很慢，超时则视为 BLOCKED 交给上层升级。
+        # stdin=DEVNULL is critical: otherwise codex exec hangs at
+        # "Reading additional input from stdin...".
+        # timeout is a safety net: high-reasoning models can be slow; on timeout treat as
+        # BLOCKED and let the upper layer escalate.
         subprocess.run(
             command,
             cwd=str(repo_path),
@@ -281,19 +285,19 @@ def codex_exec(subtask, repo):
         status = data.get("status")
         summary = data.get("summary")
         if status not in ("DONE", "BLOCKED") or not isinstance(summary, str):
-            raise ValueError("Codex 输出不符合 schema")
+            raise ValueError("Codex output does not match the schema")
         return {"status": status, "summary": summary}
     except subprocess.TimeoutExpired:
-        return {"status": "BLOCKED", "summary": f"Codex 执行超过 {CODEX_TIMEOUT} 秒超时"}
+        return {"status": "BLOCKED", "summary": f"Codex timed out after {CODEX_TIMEOUT}s"}
     except Exception:
-        return {"status": "BLOCKED", "summary": "无法解析 Codex 输出"}
+        return {"status": "BLOCKED", "summary": "could not parse Codex output"}
 
 
 def run_check(check_command, repo):
     repo_path = _repo_path(repo)
     if DRY_RUN:
-        print(f"[dry-run] 将运行检查命令：{check_command}")
-        return True, "dry-run：未真实运行检查命令"
+        print(f"[dry-run] would run check command: {check_command}")
+        return True, "dry-run: check command not actually run"
     proc = subprocess.run(
         check_command,
         shell=True,
@@ -313,14 +317,14 @@ def git_commit(repo, message):
     hash_command = ["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"]
 
     if DRY_RUN:
-        _print_command("将暂存变更", add_command)
-        _print_command("将创建提交", commit_command)
-        _print_command("将读取短 commit hash", hash_command)
+        _print_command("would stage changes", add_command)
+        _print_command("would create commit", commit_command)
+        _print_command("would read short commit hash", hash_command)
         return "dryrun"
 
     _run_required(add_command)
-    # 若没有任何待提交改动，git commit 会以非零退出导致整个编排器崩溃。
-    # 这里先检查工作区状态：无改动则跳过提交，返回 None。
+    # If there is nothing to commit, `git commit` exits non-zero and would crash the whole
+    # orchestrator. Check the working tree first: if there are no changes, skip and return None.
     status = subprocess.run(
         ["git", "-C", str(repo_path), "status", "--porcelain"],
         capture_output=True,
@@ -344,7 +348,7 @@ def create_branch(repo, goal):
     command = ["git", "-C", str(repo_path), "checkout", "-b", branch]
 
     if DRY_RUN:
-        _print_command("将创建并切换分支", command)
+        _print_command("would create and switch branch", command)
         return branch
 
     _run_required(command)
@@ -354,14 +358,14 @@ def create_branch(repo, goal):
 def claude_repair(subtask, last_error, repo, model):
     repo_path = _repo_path(repo)
     prompt = (
-        "一个 Codex 子任务连续失败，请判断是否应该重试或中止。\n\n"
-        f"子任务：{subtask.get('description', '')}\n"
-        f"验收命令：{subtask.get('check_command', '')}\n\n"
-        "最近一次错误输出尾部：\n"
+        "A Codex subtask has failed repeatedly. Decide whether to retry or abort.\n\n"
+        f"Subtask: {subtask.get('description', '')}\n"
+        f"Check command: {subtask.get('check_command', '')}\n\n"
+        "Tail of the most recent error output:\n"
         f"{last_error[-4000:]}\n\n"
-        "如果可以通过给 Codex 更明确的补充说明解决，action 返回 retry，"
-        "instructions 写给 Codex 的追加指令；如果不应继续烧预算，action 返回 abort。"
-        "只输出符合 schema 的结构化 JSON。"
+        "If clearer additional instructions for Codex could fix it, return action retry and put "
+        "the extra instructions for Codex in instructions; if it is not worth burning more budget, "
+        "return action abort. Output only structured JSON matching the schema."
     )
     command = [
         "claude",
@@ -378,17 +382,17 @@ def claude_repair(subtask, last_error, repo, model):
     ]
 
     if DRY_RUN:
-        _print_command("将调用 Claude 生成修复决策", command)
-        return {"action": "abort", "instructions": "dry-run：未真实调用 Claude"}
+        _print_command("would call Claude for a repair decision", command)
+        return {"action": "abort", "instructions": "dry-run: Claude not actually called"}
 
     proc = _run_required(command, cwd=str(repo_path))
     data = _structured_result(proc.stdout)
     if not isinstance(data, dict):
-        return {"action": "abort", "instructions": "Claude 修复输出不是对象"}
+        return {"action": "abort", "instructions": "Claude repair output is not an object"}
     action = data.get("action")
     instructions = data.get("instructions")
     if action not in ("retry", "abort") or not isinstance(instructions, str):
-        return {"action": "abort", "instructions": "Claude 修复输出不符合 schema"}
+        return {"action": "abort", "instructions": "Claude repair output does not match the schema"}
     return {"action": action, "instructions": instructions}
 
 
@@ -437,7 +441,7 @@ def render_markdown(repo, state):
 
 def _refresh(repo, state):
     if DRY_RUN:
-        print("[dry-run] 将刷新 mission.json 和 mission.md")
+        print("[dry-run] would refresh mission.json and mission.md")
         return
     write_state(repo, state)
     render_markdown(repo, state)
@@ -454,12 +458,13 @@ def _run_escalated_retry(subtask, repo, state):
     ok, tail = run_check(subtask["check_command"], repo)
     _log(
         state,
-        f"子任务 {subtask['id']} 升级后重试：Codex={res['status']}，检查={'通过' if ok else '失败'}。",
+        f"Subtask {subtask['id']} retry after escalation: Codex={res['status']}, "
+        f"check={'pass' if ok else 'fail'}.",
     )
     if res["status"] == "DONE" and ok:
         subtask["commit"] = git_commit(
             repo,
-            f"[orchestrator] 子任务{subtask['id']}: {subtask['description']}",
+            f"[orchestrator] subtask {subtask['id']}: {subtask['description']}",
         )
         subtask["status"] = "done"
         return True, tail
@@ -470,25 +475,25 @@ def _run_escalated_retry(subtask, repo, state):
 def main(argv=None):
     global DRY_RUN
 
-    parser = argparse.ArgumentParser(description="Claude-Codex 编排器")
-    parser.add_argument("--goal", required=True, help="要完成的目标")
-    parser.add_argument("--repo", default=".", help="目标 git 仓库路径，默认当前目录")
-    parser.add_argument("--model", default="opus", help="Claude 模型，默认 opus")
-    parser.add_argument("--max-plan-usd", type=float, default=1.0, help="Claude 规划预算上限")
-    parser.add_argument("--max-escalations", type=int, default=2, help="最多升级给 Claude 的次数")
-    parser.add_argument("--dry-run", action="store_true", help="只打印将执行的命令，不真实调用 agent 或写 git")
+    parser = argparse.ArgumentParser(description="Claude-Codex orchestrator")
+    parser.add_argument("--goal", required=True, help="the goal to accomplish")
+    parser.add_argument("--repo", default=".", help="target git repo path, default current dir")
+    parser.add_argument("--model", default="opus", help="Claude model, default opus")
+    parser.add_argument("--max-plan-usd", type=float, default=1.0, help="Claude planning budget cap")
+    parser.add_argument("--max-escalations", type=int, default=2, help="max times to escalate to Claude")
+    parser.add_argument("--dry-run", action="store_true", help="only print the commands, do not call agents or write git")
     args = parser.parse_args(argv)
     DRY_RUN = args.dry_run
 
     if args.dry_run:
-        print("dry-run 模式：只展示将执行的关键步骤，不调用 claude/codex，也不执行 git 写操作。")
+        print("dry-run mode: showing the key steps only; not calling claude/codex and not writing git.")
 
     preflight(args.repo)
     plan = claude_plan(args.goal, args.repo, args.model, args.max_plan_usd)
     branch = create_branch(args.repo, args.goal)
     subtasks = plan.get("subtasks", [])
     state = {"goal": args.goal, "branch": branch, "subtasks": subtasks, "log": []}
-    _log(state, "任务启动。")
+    _log(state, "Task started.")
     _refresh(args.repo, state)
 
     escalations = 0
@@ -496,7 +501,7 @@ def main(argv=None):
 
     for subtask in subtasks:
         subtask["status"] = "running"
-        _log(state, f"开始子任务 {subtask['id']}。")
+        _log(state, f"Starting subtask {subtask['id']}.")
         _refresh(args.repo, state)
 
         success = False
@@ -507,17 +512,17 @@ def main(argv=None):
             ok, last_tail = run_check(subtask["check_command"], args.repo)
             _log(
                 state,
-                f"子任务 {subtask['id']} 尝试 {subtask['attempts']}："
-                f"Codex={res['status']}，检查={'通过' if ok else '失败'}。",
+                f"Subtask {subtask['id']} attempt {subtask['attempts']}: "
+                f"Codex={res['status']}, check={'pass' if ok else 'fail'}.",
             )
             _refresh(args.repo, state)
             if res["status"] == "DONE" and ok:
                 subtask["commit"] = git_commit(
                     args.repo,
-                    f"[orchestrator] 子任务{subtask['id']}: {subtask['description']}",
+                    f"[orchestrator] subtask {subtask['id']}: {subtask['description']}",
                 )
                 subtask["status"] = "done"
-                _log(state, f"子任务 {subtask['id']} 完成，commit={subtask['commit']}。")
+                _log(state, f"Subtask {subtask['id']} done, commit={subtask['commit']}.")
                 success = True
                 break
 
@@ -525,15 +530,15 @@ def main(argv=None):
             escalations += 1
             if escalations > args.max_escalations:
                 subtask["status"] = "failed"
-                _log(state, "已达升级上限，交还用户。")
-                print("已达升级上限，交还用户。")
+                _log(state, "Escalation limit reached, handing back to the user.")
+                print("Escalation limit reached, handing back to the user.")
                 stop_all = True
             else:
                 decision = claude_repair(subtask, last_tail, args.repo, args.model)
-                _log(state, f"Claude 修复决策：{decision['action']}。")
+                _log(state, f"Claude repair decision: {decision['action']}.")
                 if decision["action"] == "abort":
                     subtask["status"] = "failed"
-                    _log(state, "Claude 建议中止，交还用户。")
+                    _log(state, "Claude advised aborting, handing back to the user.")
                     stop_all = True
                 else:
                     subtask["status"] = "escalated"
@@ -541,7 +546,7 @@ def main(argv=None):
                     _refresh(args.repo, state)
                     retry_ok, last_tail = _run_escalated_retry(subtask, args.repo, state)
                     if not retry_ok:
-                        _log(state, f"子任务 {subtask['id']} 升级后仍失败，交还用户。")
+                        _log(state, f"Subtask {subtask['id']} still failed after escalation, handing back to the user.")
                         stop_all = True
 
         _refresh(args.repo, state)
@@ -550,11 +555,11 @@ def main(argv=None):
 
     done_count = sum(1 for item in subtasks if item.get("status") == "done")
     failed_count = sum(1 for item in subtasks if item.get("status") == "failed")
-    print("最终总结：")
-    print(f"- 完成：{done_count}")
-    print(f"- 失败：{failed_count}")
-    print(f"- 分支：{branch}")
-    print("请 review 分支内容后自行合并。")
+    print("Final summary:")
+    print(f"- done: {done_count}")
+    print(f"- failed: {failed_count}")
+    print(f"- branch: {branch}")
+    print("Review the branch and merge it yourself.")
 
 
 if __name__ == "__main__":

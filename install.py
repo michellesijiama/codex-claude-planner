@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""安装 claude-planner 到 Codex。
+"""Install claude-planner into Codex.
 
-自动完成：
-- 定位本仓库里的 claude_planner_mcp.py（绝对路径）
-- 探测 claude / python3
-- 用 `codex mcp add` 注册一个名为 claude-planner 的 stdio MCP 服务
-- 给该服务补上 startup_timeout_sec / tool_timeout_sec（Claude 规划较慢）
+Automatically:
+- locates this repo's claude_planner_mcp.py (absolute path)
+- detects claude / python3
+- registers a stdio MCP server named claude-planner via `codex mcp add`
+- adds startup_timeout_sec / tool_timeout_sec for that server (Claude planning is slow)
+- installs the /claude slash command into Codex's prompts directory
 
-用法：
-  python3 install.py                # 默认 sonnet 规划模型
-  python3 install.py --model opus   # 改用更强（更慢更贵）的模型
-  python3 install.py --max-usd 2.0  # 调高单次规划预算上限
+Usage:
+  python3 install.py                # default sonnet planning model
+  python3 install.py --model opus   # use a stronger (slower, pricier) model
+  python3 install.py --max-usd 2.0  # raise the per-plan budget cap
 
-卸载：codex mcp remove claude-planner
+Uninstall: codex mcp remove claude-planner
 """
 
 import argparse
@@ -29,7 +30,7 @@ TOOL_TIMEOUT_SEC = 300
 
 
 def fail(message):
-    print(f"错误：{message}", file=sys.stderr)
+    print(f"Error: {message}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -38,28 +39,28 @@ def codex_home():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="安装 claude-planner 到 Codex")
-    parser.add_argument("--model", default="sonnet", help="Claude 规划模型，默认 sonnet")
-    parser.add_argument("--max-usd", default="1.0", help="单次规划预算上限（美元）")
+    parser = argparse.ArgumentParser(description="Install claude-planner into Codex")
+    parser.add_argument("--model", default="sonnet", help="Claude planning model (default sonnet)")
+    parser.add_argument("--max-usd", default="1.0", help="budget cap per planning call (USD)")
     args = parser.parse_args()
 
     server_path = os.path.join(HERE, "claude_planner_mcp.py")
     if not os.path.isfile(server_path):
-        fail(f"找不到 {server_path}")
+        fail(f"not found: {server_path}")
 
     codex = shutil.which("codex")
     if not codex:
-        fail("未找到 codex CLI，请先安装 Codex 并确认在 PATH 上。")
+        fail("codex CLI not found. Install Codex and make sure it is on your PATH.")
 
     claude = shutil.which("claude")
     if not claude:
-        print("警告：未在 PATH 上找到 claude。服务运行时仍会再探测一次；"
-              "若失败，请确保 Claude Code CLI 已安装。")
+        print("Warning: claude not found on PATH. The server will probe again at runtime; "
+              "if that fails, make sure the Claude Code CLI is installed.")
         claude = "claude"
 
     python = sys.executable or shutil.which("python3") or "python3"
 
-    # 已存在则先移除，保证可重复运行（幂等）。
+    # Remove any existing entry first so the installer is idempotent.
     subprocess.run([codex, "mcp", "remove", SERVER_NAME],
                    capture_output=True, text=True)
 
@@ -72,37 +73,38 @@ def main():
     ]
     proc = subprocess.run(add_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        fail(f"codex mcp add 失败：\n{proc.stdout}\n{proc.stderr}")
-    print(f"已注册 MCP 服务 '{SERVER_NAME}'。")
+        fail(f"codex mcp add failed:\n{proc.stdout}\n{proc.stderr}")
+    print(f"Registered MCP server '{SERVER_NAME}'.")
 
     _patch_timeouts()
     _install_slash_command()
 
     print()
-    print("✅ 安装完成。接下来：")
-    print("  1. 重启 Codex（app 或 CLI 会话）以加载新服务。")
-    print("  2. 在 Codex 里需要规划时调用 plan / consult 工具；")
-    print("     第一次调用会弹批准框，点同意（可选『始终允许』）。")
-    print(f"  规划模型：{args.model}（改用更强模型：python3 install.py --model opus）")
-    print("  在 Codex 里可直接用斜杠命令：/claude <要规划的任务或要问的问题>")
+    print("Done. Next steps:")
+    print("  1. Restart Codex (app or CLI session) to load the new server.")
+    print("  2. In Codex, call the plan / consult tools when you need planning;")
+    print("     the first call shows an approval prompt - approve it (you can choose 'always allow').")
+    print(f"  Planning model: {args.model} (use a stronger one: python3 install.py --model opus)")
+    print("  Or use the slash command in Codex: /claude <task to plan or question to ask>")
 
 
 def _install_slash_command():
-    """把 /claude 斜杠命令拷到 Codex 的 prompts 目录。"""
+    """Copy the /claude slash command into Codex's prompts directory."""
     src = os.path.join(HERE, "prompts", "claude.md")
     if not os.path.isfile(src):
         return
     dest_dir = os.path.join(codex_home(), "prompts")
     os.makedirs(dest_dir, exist_ok=True)
     shutil.copyfile(src, os.path.join(dest_dir, "claude.md"))
-    print("已安装斜杠命令 /claude(在 Codex 里输入 /claude <内容> 即可)。")
+    print("Installed slash command /claude (type /claude <text> in Codex).")
 
 
 def _patch_timeouts():
-    """在 config.toml 的 [mcp_servers.claude-planner] 段补超时键（若缺）。"""
+    """Add timeout keys under [mcp_servers.claude-planner] in config.toml (if missing)."""
     config_path = os.path.join(codex_home(), "config.toml")
     if not os.path.isfile(config_path):
-        print("提示：未找到 config.toml，跳过超时设置（codex mcp add 应已创建配置）。")
+        print("Note: config.toml not found, skipping timeout settings "
+              "(codex mcp add should have created the config).")
         return
 
     with open(config_path, "r", encoding="utf-8") as handle:
@@ -113,7 +115,7 @@ def _patch_timeouts():
     if start is None:
         return
 
-    # 找到本段范围（到下一个 [ 开头的段，或文件结尾）。
+    # Find the extent of this section (up to the next [ section, or end of file).
     end = len(lines)
     for i in range(start + 1, len(lines)):
         if lines[i].lstrip().startswith("["):
@@ -130,11 +132,11 @@ def _patch_timeouts():
     if not inserts:
         return
 
-    # 插在段头之后。
+    # Insert right after the section header.
     new_lines = lines[:start + 1] + inserts + lines[start + 1:]
     with open(config_path, "w", encoding="utf-8") as handle:
         handle.writelines(new_lines)
-    print(f"已设置超时：startup={STARTUP_TIMEOUT_SEC}s, tool={TOOL_TIMEOUT_SEC}s。")
+    print(f"Set timeouts: startup={STARTUP_TIMEOUT_SEC}s, tool={TOOL_TIMEOUT_SEC}s.")
 
 
 if __name__ == "__main__":

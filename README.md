@@ -40,8 +40,10 @@ cd codex-claude-planner
 python3 install.py
 ```
 
-That registers a `claude-planner` MCP server in your Codex config (`~/.codex/config.toml`),
-pointing at this repo's `claude_planner_mcp.py`, and sets sane timeouts. Then **restart Codex**.
+That does three things, then you **restart Codex**:
+- registers a `claude-planner` MCP server in your Codex config (`~/.codex/config.toml`),
+  pointing at this repo's `claude_planner_mcp.py`, with sane timeouts;
+- installs a `/claude` slash command into `~/.codex/prompts/`.
 
 Options:
 
@@ -54,12 +56,17 @@ Uninstall: `codex mcp remove claude-planner`
 
 ## Use
 
-1. Restart Codex (app or CLI session) so it loads the new server.
+1. Restart Codex (app or CLI session) so it loads the new server and command.
 2. Work in Codex normally.
-3. For a large or fuzzy task, let Codex call the planner — e.g. tell it:
-   > Use the claude-planner `plan` tool with goal "<your goal>" and project_dir "<absolute path>", then follow the plan.
-4. **The first tool call shows an approval prompt — approve it** (choose "always allow" to skip it next time).
-5. After ~40–70 seconds Claude returns a plan and Codex executes it.
+3. **Easiest: use the `/claude` slash command.** Type, in Codex:
+   > `/claude break this into steps and build it: add a /health endpoint with a test`
+   Codex routes it to Claude (`plan` for tasks, `consult` for questions), then executes.
+4. Or just ask in plain language — e.g. "use the claude-planner plan tool to plan this, then do it".
+5. **The first tool call shows an approval prompt — approve it** (choose "always allow" to skip it next time).
+6. After ~40–70 seconds Claude returns a plan and Codex executes it.
+
+> Note: `@` in Codex is for file mentions, so there is no `@claude`. The slash command `/claude`
+> is the equivalent — that is the intended trigger.
 
 ### The two tools
 

@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
 SERVER_NAME = "claude-planner"
 STARTUP_TIMEOUT_SEC = 30
 TOOL_TIMEOUT_SEC = 300
@@ -41,8 +43,7 @@ def main():
     parser.add_argument("--max-usd", default="1.0", help="单次规划预算上限（美元）")
     args = parser.parse_args()
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    server_path = os.path.join(here, "claude_planner_mcp.py")
+    server_path = os.path.join(HERE, "claude_planner_mcp.py")
     if not os.path.isfile(server_path):
         fail(f"找不到 {server_path}")
 
@@ -75,6 +76,7 @@ def main():
     print(f"已注册 MCP 服务 '{SERVER_NAME}'。")
 
     _patch_timeouts()
+    _install_slash_command()
 
     print()
     print("✅ 安装完成。接下来：")
@@ -82,6 +84,18 @@ def main():
     print("  2. 在 Codex 里需要规划时调用 plan / consult 工具；")
     print("     第一次调用会弹批准框，点同意（可选『始终允许』）。")
     print(f"  规划模型：{args.model}（改用更强模型：python3 install.py --model opus）")
+    print("  在 Codex 里可直接用斜杠命令：/claude <要规划的任务或要问的问题>")
+
+
+def _install_slash_command():
+    """把 /claude 斜杠命令拷到 Codex 的 prompts 目录。"""
+    src = os.path.join(HERE, "prompts", "claude.md")
+    if not os.path.isfile(src):
+        return
+    dest_dir = os.path.join(codex_home(), "prompts")
+    os.makedirs(dest_dir, exist_ok=True)
+    shutil.copyfile(src, os.path.join(dest_dir, "claude.md"))
+    print("已安装斜杠命令 /claude(在 Codex 里输入 /claude <内容> 即可)。")
 
 
 def _patch_timeouts():

@@ -48,7 +48,7 @@ That does three things, then you **restart Codex**:
 Options:
 
 ```bash
-python3 install.py --model opus    # stronger (slower, pricier) planning; default is sonnet
+python3 install.py --model sonnet  # cheaper, faster planning; default is opus
 python3 install.py --max-usd 2.0   # raise the per-plan budget cap (default 1.0)
 ```
 
@@ -89,7 +89,7 @@ Set per-server env in `~/.codex/config.toml` under `[mcp_servers.claude-planner.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `CLAUDE_PLANNER_MODEL` | `sonnet` | Claude model used for planning. |
+| `CLAUDE_PLANNER_MODEL` | `opus` | Claude model used for planning. |
 | `CLAUDE_PLANNER_MAX_USD` | `1.0` | Budget cap per planning call. |
 | `CLAUDE_BIN` | auto-detected | Path to the `claude` binary. |
 | `CLAUDE_PLANNER_LOG` | (unset) | If set to a file path, writes a debug log. |

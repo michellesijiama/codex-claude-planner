@@ -9,8 +9,8 @@ Automatically:
 - installs the /claude slash command into Codex's prompts directory
 
 Usage:
-  python3 install.py                # default sonnet planning model
-  python3 install.py --model opus   # use a stronger (slower, pricier) model
+  python3 install.py                # default opus planning model
+  python3 install.py --model sonnet # use a cheaper, faster model
   python3 install.py --max-usd 2.0  # raise the per-plan budget cap
 
 Uninstall: codex mcp remove claude-planner
@@ -40,7 +40,7 @@ def codex_home():
 
 def main():
     parser = argparse.ArgumentParser(description="Install claude-planner into Codex")
-    parser.add_argument("--model", default="sonnet", help="Claude planning model (default sonnet)")
+    parser.add_argument("--model", default="opus", help="Claude planning model (default opus)")
     parser.add_argument("--max-usd", default="1.0", help="budget cap per planning call (USD)")
     args = parser.parse_args()
 
@@ -84,7 +84,7 @@ def main():
     print("  1. Restart Codex (app or CLI session) to load the new server.")
     print("  2. In Codex, call the plan / consult tools when you need planning;")
     print("     the first call shows an approval prompt - approve it (you can choose 'always allow').")
-    print(f"  Planning model: {args.model} (use a stronger one: python3 install.py --model opus)")
+    print(f"  Planning model: {args.model} (use a cheaper one: python3 install.py --model sonnet)")
     print("  Or use the slash command in Codex: /claude <task to plan or question to ask>")
 
 
